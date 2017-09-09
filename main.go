@@ -1,3 +1,10 @@
+// xdp_drop.go Drop incoming packets on XDP layer and count for which
+// protocol type. Based on:
+// https://github.com/iovisor/bcc/blob/master/examples/networking/xdp/xdp_drop_count.py
+//
+// Copyright (c) 2017 GustavoKatel
+// Licensed under the Apache License, Version 2.0 (the "License")
+
 package main
 
 import (
@@ -25,7 +32,6 @@ func usage() {
 }
 
 func main() {
-
 	sourceData, dataErr := Asset("data/ebpf/xdp-drop-bpf.c")
 	if dataErr != nil {
 		fmt.Println(dataErr)
@@ -42,8 +48,6 @@ func main() {
 
 	device = os.Args[1]
 
-	mode := C.BPF_PROG_TYPE_XDP
-
 	ret := "XDP_DROP"
 	ctxtype := "xdp_md"
 
@@ -54,17 +58,20 @@ func main() {
 	})
 	defer module.Close()
 
-	fn, err := module.Load("xdp_prog1", mode)
+	fn, err := module.Load("xdp_prog1", C.BPF_PROG_TYPE_XDP)
 
-	if mode == C.BPF_PROG_TYPE_XDP {
-		err = module.AttachXDP(device, fn)
+	err = module.AttachXDP(device, fn)
 
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
 	}
+
+	defer func() {
+		if err := module.RemoveXDP(device); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to remove XDP from %s: %v\n", device, err)
+		}
+	}()
 
 	fmt.Println("Dropping packets, hit CTRL+C to stop")
 
@@ -82,11 +89,13 @@ func main() {
 
 		key, err = strconv.ParseUint(entry.Key, 0, 32)
 		if err != nil {
+			// fmt.Fprintln(os.Stderr, err)
 			continue
 		}
 
-		value, err = strconv.ParseUint(entry.Value, 0, 64)
+		value, err = strconv.ParseUint(entry.Value, 0, 32)
 		if err != nil {
+			// fmt.Fprintln(os.Stderr, err)
 			continue
 		}
 
@@ -94,10 +103,4 @@ func main() {
 			fmt.Printf("%v: %v pkts\n", key, value)
 		}
 	}
-
-	err = module.RemoveXDP(device)
-	if err != nil {
-		fmt.Println(err)
-	}
-
 }

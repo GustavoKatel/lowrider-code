@@ -7,8 +7,22 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 
+//#define DEBUG 1
+#ifdef  DEBUG
+/* Only use this for debug output. Notice output from bpf_trace_printk()
+ * end-up in /sys/kernel/debug/tracing/trace_pipe
+ */
+#define bpf_debug(fmt, ...)						\
+		({							\
+			char ____fmt[] = fmt;				\
+			bpf_trace_printk(____fmt, sizeof(____fmt),	\
+				     ##__VA_ARGS__);			\
+		})
+#else
+#define bpf_debug(fmt, ...) { } while (0)
+#endif
 
-BPF_TABLE("percpu_array", uint32_t, long, dropcnt, 256);
+BPF_TABLE("array", int, long, dropcnt, 256);
 
 static inline int parse_ipv4(void *data, u64 nh_off, void *data_end) {
     struct iphdr *iph = data + nh_off;
@@ -74,8 +88,7 @@ int xdp_prog1(struct CTXTYPE *ctx) {
         index = 0;
 
     value = dropcnt.lookup(&index);
-    if (value)
-        *value += 1;
+    if (value) lock_xadd(value, 1);
 
     return rc;
 }

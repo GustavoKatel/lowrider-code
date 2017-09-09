@@ -133,7 +133,8 @@ int xdp_prog1(struct CTXTYPE *ctx) {
 fn = b.load_func("xdp_prog1", mode)
 
 if mode == BPF.XDP:
-    b.attach_xdp(device, fn, flags)
+    b.attach_xdp(device, fn) #, flags)
+    # pass
 else:
     ip = pyroute2.IPRoute()
     ipdb = pyroute2.IPDB(nl=ip)
@@ -160,7 +161,7 @@ while 1:
         break;
 
 if mode == BPF.XDP:
-    b.remove_xdp(device, flags)
+    b.remove_xdp(device) #, flags)
 else:
     ip.tc("del", "clsact", idx)
     ipdb.release()
