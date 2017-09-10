@@ -12,8 +12,10 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"syscall"
 
 	bpf "github.com/GustavoKatel/gobpf/bcc"
+	"github.com/vishvananda/netlink"
 )
 
 /*
@@ -26,13 +28,13 @@ void perf_reader_free(void *ptr);
 import "C"
 
 func usage() {
-	fmt.Printf("Usage: %v <ifdev>\n", os.Args[0])
-	fmt.Printf("e.g.: %v eth0\n", os.Args[0])
+	fmt.Printf("Usage: %v (xdp|tccls|tcact) <ifdev>\n", os.Args[0])
+	fmt.Printf("e.g.: %v xdp eth0\n", os.Args[0])
 	os.Exit(1)
 }
 
 func main() {
-	sourceData, dataErr := Asset("data/ebpf/xdp-drop-bpf.c")
+	sourceData, dataErr := Asset("data/ebpf/drop-all.c")
 	if dataErr != nil {
 		fmt.Println(dataErr)
 		os.Exit(1)
@@ -42,14 +44,32 @@ func main() {
 
 	var device string
 
-	if len(os.Args) != 2 {
+	if len(os.Args) != 3 {
 		usage()
 	}
 
-	device = os.Args[1]
+	var ret, ctxtype string
+	var mode int
+	switch os.Args[1] {
+	case "xdp":
+		ret = "XDP_DROP"
+		ctxtype = "xdp_md"
+		mode = C.BPF_PROG_TYPE_XDP
+	case "tccls":
+		ret = "TC_ACT_SHOT"
+		ctxtype = "__sk_buff"
+		mode = C.BPF_PROG_TYPE_SCHED_CLS
+	case "tcact":
+		ret = "TC_ACT_SHOT" // TODO: correct return type
+		ctxtype = "__sk_buff"
+		mode = C.BPF_PROG_TYPE_SCHED_ACT
+		fmt.Fprintln(os.Stderr, "Not implemented yet")
+		os.Exit(1)
+	default:
+		usage()
+	}
 
-	ret := "XDP_DROP"
-	ctxtype := "xdp_md"
+	device = os.Args[2]
 
 	module := bpf.NewModule(source, []string{
 		"-w",
@@ -58,20 +78,96 @@ func main() {
 	})
 	defer module.Close()
 
-	fn, err := module.Load("xdp_prog1", C.BPF_PROG_TYPE_XDP)
+	fn, err := module.Load("bpf_prog", mode)
 
-	err = module.AttachXDP(device, fn)
-
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	defer func() {
-		if err := module.RemoveXDP(device); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to remove XDP from %s: %v\n", device, err)
+	if mode == C.BPF_PROG_TYPE_XDP {
+		err = module.AttachXDP(device, fn)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
-	}()
+		defer func() {
+			if err := module.RemoveXDP(device); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to remove XDP from %s: %v\n", device, err)
+			}
+		}()
+
+	} else {
+		var link netlink.Link
+		var filter netlink.Filter
+
+		link, err = netlink.LinkByName(device)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		// add clsact qdisc
+		qdisc := &netlink.GenericQdisc{
+			QdiscAttrs: netlink.QdiscAttrs{
+				LinkIndex: link.Attrs().Index,
+				Handle:    netlink.MakeHandle(0xffff, 0),
+				Parent:    netlink.HANDLE_CLSACT,
+			},
+			QdiscType: "clsact",
+		}
+		// This feature was added in kernel 4.5
+		if err := netlink.QdiscAdd(qdisc); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed adding clsact qdisc: %v\n", err)
+			os.Exit(1)
+		}
+
+		if mode == C.BPF_PROG_TYPE_SCHED_CLS {
+			filter = &netlink.BpfFilter{
+				FilterAttrs: netlink.FilterAttrs{
+					LinkIndex: link.Attrs().Index,
+					Parent:    netlink.HANDLE_MIN_INGRESS,
+					Handle:    netlink.MakeHandle(0, 1),
+					Protocol:  syscall.ETH_P_ALL,
+					Priority:  1,
+				},
+				Fd:           fn,
+				Name:         "bpf_prog",
+				DirectAction: true,
+			}
+			if filter.(*netlink.BpfFilter).Fd < 0 {
+				fmt.Fprintln(os.Stderr, "Failed to load bpf program")
+				os.Exit(1)
+			}
+
+		} else { // SCHED_ACT
+			// mode == C.BPF_PROG_TYPE_SCHED_ACT
+			classId := netlink.MakeHandle(1, 1)
+			// create a U32 filter and attach a BPFFilter
+			filter = &netlink.U32{
+				FilterAttrs: netlink.FilterAttrs{
+					LinkIndex: link.Attrs().Index,
+					Parent:    netlink.MakeHandle(0xffff, 0),
+					Priority:  1,
+					Protocol:  syscall.ETH_P_ALL,
+				},
+				ClassId: classId,
+				Actions: []netlink.Action{
+					&netlink.BpfAction{Fd: fn, Name: "bpf_prog"},
+				},
+			}
+		}
+
+		if err := netlink.FilterAdd(filter); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
+		defer func() {
+			if err := netlink.FilterDel(filter); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+			if err = netlink.QdiscDel(qdisc); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		}()
+
+	}
 
 	fmt.Println("Dropping packets, hit CTRL+C to stop")
 

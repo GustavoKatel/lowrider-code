@@ -35,8 +35,8 @@ if len(sys.argv) == 3:
     else:
         device = sys.argv[1]
 
-mode = BPF.XDP
-#mode = BPF.SCHED_CLS
+# mode = BPF.XDP
+mode = BPF.SCHED_CLS
 
 if mode == BPF.XDP:
     ret = "XDP_DROP"

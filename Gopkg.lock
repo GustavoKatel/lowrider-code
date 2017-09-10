@@ -3,13 +3,31 @@
 
 [[projects]]
   branch = "master"
+  name = "github.com/GustavoKatel/gobpf"
+  packages = ["bcc"]
+  revision = "a3dfca09d62cc7ca2f4714a66ed6fe7c2cde3719"
+
+[[projects]]
+  branch = "master"
   name = "github.com/iovisor/gobpf"
-  packages = ["."]
+  packages = ["pkg/cpuonline"]
   revision = "a71f0ba22ab9a56897bdb3e6ba873550cecbea0f"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/vishvananda/netlink"
+  packages = [".","nl"]
+  revision = "933b978eae8c18daa1077a0eb7186b689cd9f82d"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/vishvananda/netns"
+  packages = ["."]
+  revision = "86bef332bfc3b59b7624a600bd53009ce91a9829"
 
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "bf4e92e1046ac4d9a1ceda970b4ba67ab1d41819a66154f951ac49b7a64848c2"
+  inputs-digest = "2912b93d345aed5870ffe558a8b49c95b55e54297686e1aaad36db88b4dcf25f"
   solver-name = "gps-cdcl"
   solver-version = 1

@@ -40,7 +40,7 @@ static inline int parse_ipv6(void *data, u64 nh_off, void *data_end) {
     return ip6h->nexthdr;
 }
 
-int xdp_prog1(struct CTXTYPE *ctx) {
+int bpf_prog(struct CTXTYPE *ctx) {
 
     void* data_end = (void*)(long)ctx->data_end;
     void* data = (void*)(long)ctx->data;
