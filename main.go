@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	bpf "github.com/GustavoKatel/gobpf/bcc"
 	"github.com/vishvananda/netlink"
@@ -30,14 +31,13 @@ import "C"
 func usage() {
 	fmt.Printf("Usage: %v (xdp|tccls|tcact) <ifdev>\n", os.Args[0])
 	fmt.Printf("e.g.: %v xdp eth0\n", os.Args[0])
-	os.Exit(1)
 }
 
 func main() {
 	sourceData, dataErr := Asset("data/ebpf/drop-all.c")
 	if dataErr != nil {
 		fmt.Println(dataErr)
-		os.Exit(1)
+		return
 	}
 
 	source := string(sourceData)
@@ -46,6 +46,7 @@ func main() {
 
 	if len(os.Args) != 3 {
 		usage()
+		return
 	}
 
 	var ret, ctxtype string
@@ -63,10 +64,11 @@ func main() {
 		ret = "TC_ACT_SHOT" // TODO: correct return type
 		ctxtype = "__sk_buff"
 		mode = C.BPF_PROG_TYPE_SCHED_ACT
-		fmt.Fprintln(os.Stderr, "Not implemented yet")
-		os.Exit(1)
+		// fmt.Fprintln(os.Stderr, "Not implemented yet")
+		// return
 	default:
 		usage()
+		return
 	}
 
 	device = os.Args[2]
@@ -84,7 +86,7 @@ func main() {
 		err = module.AttachXDP(device, fn)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return
 		}
 		defer func() {
 			if err := module.RemoveXDP(device); err != nil {
@@ -98,8 +100,8 @@ func main() {
 
 		link, err = netlink.LinkByName(device)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			fmt.Fprintln(os.Stderr, "LinkByName:", err)
+			return
 		}
 
 		// add clsact qdisc
@@ -114,8 +116,14 @@ func main() {
 		// This feature was added in kernel 4.5
 		if err := netlink.QdiscAdd(qdisc); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed adding clsact qdisc: %v\n", err)
-			os.Exit(1)
+			return
 		}
+
+		defer func() {
+			if err = netlink.QdiscDel(qdisc); err != nil {
+				fmt.Fprintln(os.Stderr, "QdiscDel", err)
+			}
+		}()
 
 		if mode == C.BPF_PROG_TYPE_SCHED_CLS {
 			filter = &netlink.BpfFilter{
@@ -132,21 +140,23 @@ func main() {
 			}
 			if filter.(*netlink.BpfFilter).Fd < 0 {
 				fmt.Fprintln(os.Stderr, "Failed to load bpf program")
-				os.Exit(1)
+				return
 			}
 
 		} else { // SCHED_ACT
 			// mode == C.BPF_PROG_TYPE_SCHED_ACT
-			classId := netlink.MakeHandle(1, 1)
-			// create a U32 filter and attach a BPFFilter
+			classID := netlink.MakeHandle(1, 1)
+			// create a U32 filter and attach a BPFAction
 			filter = &netlink.U32{
 				FilterAttrs: netlink.FilterAttrs{
 					LinkIndex: link.Attrs().Index,
-					Parent:    netlink.MakeHandle(0xffff, 0),
-					Priority:  1,
-					Protocol:  syscall.ETH_P_ALL,
+					// Parent:    netlink.MakeHandle(0xffff, 0),
+					Parent:   netlink.HANDLE_MIN_INGRESS,
+					Handle:   netlink.MakeHandle(0, 1),
+					Priority: 1,
+					Protocol: syscall.ETH_P_ALL,
 				},
-				ClassId: classId,
+				ClassId: classID,
 				Actions: []netlink.Action{
 					&netlink.BpfAction{Fd: fn, Name: "bpf_prog"},
 				},
@@ -154,16 +164,19 @@ func main() {
 		}
 
 		if err := netlink.FilterAdd(filter); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			fmt.Fprintln(os.Stderr, "FilterAdd:", err)
+			// os.Exit(1)
+			return
 		}
+
+		filters, errL := netlink.FilterList(link, netlink.HANDLE_MIN_INGRESS)
+
+		fmt.Printf("filters count: %v\n", len(filters))
+		fmt.Printf("Err: %v\n", errL)
 
 		defer func() {
 			if err := netlink.FilterDel(filter); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-			}
-			if err = netlink.QdiscDel(qdisc); err != nil {
-				fmt.Fprintln(os.Stderr, err)
+				fmt.Fprintln(os.Stderr, "FilterDel", err)
 			}
 		}()
 
@@ -175,28 +188,43 @@ func main() {
 	signal.Notify(sig, os.Interrupt, os.Kill)
 
 	dropcnt := bpf.NewTable(module.TableId("dropcnt"), module)
+	lastDropCount := make([]uint64, 256)
+	dropDelta := make([]uint64, 256)
 
-	<-sig
+	tick := time.Tick(1 * time.Second)
 
-	fmt.Printf("\n{IP protocol-number}: {total dropped pkts}\n")
-	for entry := range dropcnt.Iter() {
-		var key, value uint64
-		var err error
+	for {
+		select {
+		case <-tick:
+			fmt.Printf("\n{IP protocol-number}: {total dropped pkts} : {pkts/s}\n")
+			for entry := range dropcnt.Iter() {
+				var key, value uint64
+				var err error
 
-		key, err = strconv.ParseUint(entry.Key, 0, 32)
-		if err != nil {
-			// fmt.Fprintln(os.Stderr, err)
-			continue
+				key, err = strconv.ParseUint(entry.Key, 0, 32)
+				if err != nil {
+					// fmt.Fprintln(os.Stderr, err)
+					continue
+				}
+
+				value, err = strconv.ParseUint(entry.Value, 0, 32)
+				if err != nil {
+					// fmt.Fprintln(os.Stderr, err)
+					continue
+				}
+
+				if value > 0 {
+					delta := value - lastDropCount[key]
+					lastDropCount[key] = value
+					dropDelta[key] = delta
+					fmt.Printf("%v: %v pkts : %v pkts/s\n", key, value, delta)
+				}
+			}
+		case <-sig:
+			fmt.Println("Exiting...")
+			return
 		}
 
-		value, err = strconv.ParseUint(entry.Value, 0, 32)
-		if err != nil {
-			// fmt.Fprintln(os.Stderr, err)
-			continue
-		}
-
-		if value > 0 {
-			fmt.Printf("%v: %v pkts\n", key, value)
-		}
 	}
+
 }
