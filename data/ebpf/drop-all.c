@@ -40,7 +40,25 @@ static inline int parse_ipv6(void *data, u64 nh_off, void *data_end) {
     return ip6h->nexthdr;
 }
 
+static inline int drop(uint32_t index) {
+    bpf_trace_printk("drop: index: %d\n", index);
+    long *value;
+    value = dropcnt.lookup(&index);
+    if (value) {
+        lock_xadd(value, 1);
+        bpf_trace_printk("index: %d value: %ld\n", index, *value);
+    }
+
+    return RETURNCODE;
+}
+
+static inline int drop_error() {
+    return drop(255);
+}
+
 int bpf_prog(struct CTXTYPE *ctx) {
+
+    return drop(0);
 
     void* data_end = (void*)(long)ctx->data_end;
     void* data = (void*)(long)ctx->data;
@@ -49,7 +67,6 @@ int bpf_prog(struct CTXTYPE *ctx) {
 
     // drop packets
     int rc = RETURNCODE; // let pass XDP_PASS or redirect to tx via XDP_TX
-    long *value;
     uint16_t h_proto;
     uint64_t nh_off = 0;
     uint32_t index;
@@ -57,7 +74,7 @@ int bpf_prog(struct CTXTYPE *ctx) {
     nh_off = sizeof(*eth);
 
     if (data + nh_off  > data_end)
-        return rc;
+        return drop_error();
 
     h_proto = eth->h_proto;
 
@@ -67,7 +84,7 @@ int bpf_prog(struct CTXTYPE *ctx) {
         vhdr = data + nh_off;
         nh_off += sizeof(struct vlan_hdr);
         if (data + nh_off > data_end)
-            return rc;
+            return drop_error();
             h_proto = vhdr->h_vlan_encapsulated_proto;
     }
     if (h_proto == htons(ETH_P_8021Q) || h_proto == htons(ETH_P_8021AD)) {
@@ -76,7 +93,7 @@ int bpf_prog(struct CTXTYPE *ctx) {
         vhdr = data + nh_off;
         nh_off += sizeof(struct vlan_hdr);
         if (data + nh_off > data_end)
-            return rc;
+            return drop_error();
             h_proto = vhdr->h_vlan_encapsulated_proto;
     }
 
@@ -87,8 +104,5 @@ int bpf_prog(struct CTXTYPE *ctx) {
     else
         index = 0;
 
-    value = dropcnt.lookup(&index);
-    if (value) lock_xadd(value, 1);
-
-    return rc;
+    return drop(index);
 }
