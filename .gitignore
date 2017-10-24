@@ -1,3 +1,6 @@
 vendor/
 lowrider
 bindata.go
+nf/
+!nf/Makefile
+!nf/lowrider.c
