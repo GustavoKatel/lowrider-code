@@ -22,15 +22,15 @@
 #define bpf_debug(fmt, ...) { } while (0)
 #endif
 
-BPF_TABLE("array", int, long, dropcnt, 256);
+BPF_TABLE("percpu_array", uint32_t, long, dropcnt, 256);
 
 static inline int drop(uint32_t index) {
-    bpf_trace_printk("drop: index: %d\n", index);
+    // bpf_trace_printk("drop: index: %d\n", index);
     long *value;
     value = dropcnt.lookup(&index);
     if (value) {
-        lock_xadd(value, 1);
-        bpf_trace_printk("index: %d value: %ld\n", index, *value);
+        *value += 1;
+        // bpf_trace_printk("index: %d value: %ld\n", index, *value);
     }
 
     return RETURNCODE;

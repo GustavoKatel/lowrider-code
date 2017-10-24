@@ -34,7 +34,7 @@ func usage() {
 }
 
 func main() {
-	sourceData, dataErr := Asset("data/ebpf/drop-all.c")
+	sourceData, dataErr := Asset("data/ebpf/drop-subnet_2.c")
 	if dataErr != nil {
 		fmt.Println(dataErr)
 		return
@@ -190,13 +190,14 @@ func main() {
 	dropcnt := bpf.NewTable(module.TableId("dropcnt"), module)
 	lastDropCount := make([]uint64, 256)
 	dropDelta := make([]uint64, 256)
+	maxDropDelta := make([]uint64, 256)
 
 	tick := time.Tick(1 * time.Second)
 
 	for {
 		select {
 		case <-tick:
-			fmt.Printf("\n{IP protocol-number}: {total dropped pkts} : {pkts/s}\n")
+			fmt.Printf("\n{IP protocol-number}: {total dropped pkts} : {pkts/s} : {max pkts/s}\n")
 			for entry := range dropcnt.Iter() {
 				var key, value uint64
 				var err error
@@ -217,7 +218,12 @@ func main() {
 					delta := value - lastDropCount[key]
 					lastDropCount[key] = value
 					dropDelta[key] = delta
-					fmt.Printf("%v: %v pkts : %v pkts/s\n", key, value, delta)
+
+					if delta > maxDropDelta[key] {
+						maxDropDelta[key] = delta
+					}
+
+					fmt.Printf("%v: %v pkts : %v pkts/s : %v pkts/s\n", key, value, delta, maxDropDelta[key])
 				}
 			}
 		case <-sig:
